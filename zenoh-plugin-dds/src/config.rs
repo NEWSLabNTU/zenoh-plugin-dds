@@ -14,6 +14,7 @@
 use regex::Regex;
 use serde::de::Visitor;
 use serde::{de, Deserialize, Deserializer};
+use std::collections::HashMap;
 use std::env;
 use std::fmt;
 use std::time::Duration;
@@ -58,6 +59,10 @@ pub struct Config {
         deserialize_with = "deserialize_duration"
     )]
     pub queries_timeout: Duration,
+
+    #[serde(default, deserialize_with = "deserialize_priority_map")]
+    pub priority_map: HashMap<String, Priority>,
+
     __required__: Option<bool>,
     #[serde(default, deserialize_with = "deserialize_path")]
     __path__: Option<Vec<String>>,
@@ -162,6 +167,31 @@ where
         result.push((regex, frequency));
     }
     Ok(result)
+}
+
+fn deserialize_priority_map<'de, D>(deserializer: D) -> Result<HashMap<String, Priority>, D::Error>
+where
+    D: Deserializer<'de>,
+{
+    #[derive(Clone, Copy, Deserialize)]
+    #[serde(try_from = "u8")]
+    struct NumberedPriority(Priority);
+
+    impl TryFrom<u8> for NumberedPriority {
+        type Error = <Priority as TryFrom<u8>>::Error;
+
+        fn try_from(code: u8) -> Result<Self, Self::Error> {
+            let prio = Priority::try_from(code)?;
+            Ok(Self(prio))
+        }
+    }
+
+    let map: HashMap<String, NumberedPriority> = HashMap::deserialize(deserializer)?;
+    let map: HashMap<String, Priority> = map
+        .into_iter()
+        .map(|(topic, prio)| (topic, prio.0))
+        .collect();
+    Ok(map)
 }
 
 fn default_queries_timeout() -> Duration {

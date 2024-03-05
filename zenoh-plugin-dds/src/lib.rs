@@ -484,6 +484,8 @@ impl<'a> DdsPluginRuntime<'a> {
             return RouteStatus::Routed(ke);
         }
 
+        let priority = self.config.priority_map.get(topic_name).copied();
+
         // create route DDS->Zenoh
         match RouteDDSZenoh::new(
             self,
@@ -494,6 +496,7 @@ impl<'a> DdsPluginRuntime<'a> {
             reader_qos,
             ke.clone(),
             congestion_ctrl,
+            priority,
         )
         .await
         {

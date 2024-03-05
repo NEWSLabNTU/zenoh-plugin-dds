@@ -33,6 +33,15 @@ use zenoh_core::SyncResolve;
 
 const MAX_SAMPLES: usize = 32;
 
+pub type ForwarderListenerArgs<'a> = (
+    String,
+    KeyExpr<'a>,
+    Arc<Session>,
+    CongestionControl,
+    Priority,
+);
+type SubListenerArgs = (DiscoveryType, Sender<DiscoveryEvent>);
+
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub(crate) enum RouteStatus {
     Routed(OwnedKeyExpr), // Routing is active, with the zenoh key expression used for the route
@@ -282,9 +291,8 @@ impl From<DDSRawSample> for Value {
 }
 
 unsafe extern "C" fn on_data(dr: dds_entity_t, arg: *mut std::os::raw::c_void) {
-    let btx = Box::from_raw(arg as *mut (DiscoveryType, Sender<DiscoveryEvent>));
-    let discovery_type = btx.0;
-    let sender = &btx.1;
+    let btx = Box::from_raw(arg as *mut SubListenerArgs);
+    let (discovery_type, sender) = &*btx;
     let dp = dds_get_participant(dr);
     let mut dpih: dds_instance_handle_t = 0;
     let _ = dds_get_instance_handle(dp, &mut dpih);
@@ -442,9 +450,9 @@ fn send_discovery_event(sender: &Sender<DiscoveryEvent>, event: DiscoveryEvent) 
 
 pub(crate) fn run_discovery(dp: dds_entity_t, tx: Sender<DiscoveryEvent>) {
     unsafe {
-        let ptx = Box::new((DiscoveryType::Publication, tx.clone()));
-        let stx = Box::new((DiscoveryType::Subscription, tx.clone()));
-        let dptx = Box::new((DiscoveryType::Participant, tx));
+        let ptx: Box<SubListenerArgs> = Box::new((DiscoveryType::Publication, tx.clone()));
+        let stx: Box<SubListenerArgs> = Box::new((DiscoveryType::Subscription, tx.clone()));
+        let dptx: Box<SubListenerArgs> = Box::new((DiscoveryType::Participant, tx));
         let sub_listener = dds_create_listener(Box::into_raw(ptx) as *mut std::os::raw::c_void);
         dds_lset_data_available(sub_listener, Some(on_data));
 
@@ -476,7 +484,9 @@ pub(crate) fn run_discovery(dp: dds_entity_t, tx: Sender<DiscoveryEvent>) {
 }
 
 unsafe extern "C" fn data_forwarder_listener(dr: dds_entity_t, arg: *mut std::os::raw::c_void) {
-    let pa = arg as *mut (String, KeyExpr, Arc<Session>, CongestionControl);
+    let arg = arg as *mut ForwarderListenerArgs<'_>;
+    let (ref topic_name, ref z_key, ref z, congestion_ctrl, priority) = *arg;
+
     let mut zp: *mut ddsi_serdata = std::ptr::null_mut();
     #[allow(clippy::uninit_assumed_init)]
     let mut si = MaybeUninit::<[dds_sample_info_t; 1]>::uninit();
@@ -495,17 +505,17 @@ unsafe extern "C" fn data_forwarder_listener(dr: dds_entity_t, arg: *mut std::os
             if *crate::LOG_PAYLOAD {
                 log::trace!(
                     "Route data from DDS {} to zenoh key={} - payload: {:02x?}",
-                    &(*pa).0,
-                    &(*pa).1,
+                    topic_name,
+                    z_key,
                     raw_sample
                 );
             } else {
-                log::trace!("Route data from DDS {} to zenoh key={}", &(*pa).0, &(*pa).1);
+                log::trace!("Route data from DDS {} to zenoh key={}", topic_name, z_key);
             }
-            let _ = (*pa)
-                .2
-                .put(&(*pa).1, raw_sample)
-                .congestion_control((*pa).3)
+            let _ = z
+                .put(topic_name, raw_sample)
+                .congestion_control(congestion_ctrl)
+                .priority(priority)
                 .res_sync();
         }
         ddsi_serdata_unref(zp);
@@ -524,14 +534,18 @@ pub(crate) fn create_forwarding_dds_reader(
     z: Arc<Session>,
     read_period: Option<Duration>,
     congestion_ctrl: CongestionControl,
+    priority: Option<Priority>,
 ) -> Result<dds_entity_t, String> {
+    let priority = priority.unwrap_or_default();
+
     unsafe {
         let t = create_topic(dp, &topic_name, &type_name, type_info, keyless);
 
         match read_period {
             None => {
                 // Use a Listener to route data as soon as it arrives
-                let arg = Box::new((topic_name, z_key, z, congestion_ctrl));
+                let arg: Box<ForwarderListenerArgs<'_>> =
+                    Box::new((topic_name, z_key, z, congestion_ctrl, priority));
                 let sub_listener =
                     dds_create_listener(Box::into_raw(arg) as *mut std::os::raw::c_void);
                 dds_lset_data_available(sub_listener, Some(data_forwarder_listener));

@@ -47,7 +47,7 @@ pub(crate) struct RouteDDSZenoh<'a> {
     topic_name: String,
     // the DDS topic type
     topic_type: String,
-    // is DDS topic keyess
+    // is DDS topic keyless
     keyless: bool,
     // the zenoh publisher used to re-publish to zenoh the data received by the DDS Reader
     #[serde(skip)]
@@ -88,6 +88,7 @@ impl RouteDDSZenoh<'_> {
         reader_qos: Qos,
         ke: OwnedKeyExpr,
         congestion_ctrl: CongestionControl,
+        priority: Option<Priority>,
     ) -> Result<RouteDDSZenoh<'a>, String> {
         log::debug!(
             "Route DDS->Zenoh ({} -> {}): creation with topic_type={}",
@@ -181,6 +182,7 @@ impl RouteDDSZenoh<'_> {
             plugin.zsession.clone(),
             read_period,
             congestion_ctrl,
+            priority,
         )?;
 
         Ok(RouteDDSZenoh {
